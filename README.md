@@ -12,3 +12,10 @@ The project uses pipenv to manage dependencies. You can install all requirements
 **Run jupyter notebook:**
 
     $ pipenv run jupyter notebook
+    
+**Still ToDo:**
+
+ - edit stopword list
+ - edit Tag list
+ - better tokenizing for things like "28-jähriger" 
+ - maybe extend custom lemmatization json file (much work, for less output?)
