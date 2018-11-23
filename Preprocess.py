@@ -1,18 +1,55 @@
 import spacy
 from spacy_iwnlp import spaCyIWNLP
 
+from spacy.tokenizer import Tokenizer
+from spacy.util import compile_prefix_regex, compile_infix_regex, compile_suffix_regex
+
+from spacy.lang.char_classes import ALPHA
+
+from iwnlp.iwnlp_wrapper import IWNLPWrapper
+
+def custom_tokenizer(nlp):
+    infixes = list(nlp.Defaults.infixes)
+
+    # add custom tokenize cases:
+    # for case: <Wort>-<Wort> --> für deutsch eher weglassen?
+    #infixes.append(r'(?<=[{a}"])[-](?=[{a}])'.format(a=ALPHA))
+    # for case: <Zahl>-<Wort>
+    infixes.append(r'(?<=[0-9])[-](?=[{a}])'.format(a=ALPHA))
+
+    infix_re = compile_infix_regex(infixes)
+    prefix_re = compile_prefix_regex(nlp.Defaults.prefixes)
+    suffix_re = compile_suffix_regex(nlp.Defaults.suffixes)
+
+    return Tokenizer(nlp.vocab,
+                     rules=nlp.Defaults.tokenizer_exceptions,
+                     prefix_search=prefix_re.search,
+                     suffix_search=suffix_re.search,
+                     infix_finditer=infix_re.finditer,
+                     token_match=None)
+
+
 class Preprocess:
     # zur Lemmatisierung im Deutschen
-    iwnlp = spaCyIWNLP(lemmatizer_path='data/IWNLP.Lemmatizer_20181001.json')
+
 
     nlp = spacy.load('de')
 
+    # IWNLP German Lemmatizations:
+    #iwnlp = spaCyIWNLP(lemmatizer_path='data/IWNLP.Lemmatizer_20181001.json', ignore_case=True)
+    lemmatizer = IWNLPWrapper(lemmatizer_path='data/IWNLP.Lemmatizer_20181001.json')
+
+    #add custom tokenizer
+    nlp.tokenizer = custom_tokenizer(nlp)
+
+    '''
     try:
         # add pipes
         nlp.add_pipe(iwnlp)
         # nlp.add_pipe(__set_custom_boundaries, before='parser')
     except Exception:
         pass
+    '''
 
     stopwords_to_remove_from_default_set = ["schlecht", "mensch", "menschen", "beispiel", "gott", "jahr", "jahre",
                                             "jahren", "nicht", "uhr"]
@@ -27,14 +64,18 @@ class Preprocess:
                       'PTKVZ', 'PTKZU', 'PWAT', 'PWAV', 'PWS', 'TRUNC', 'XY', 'SP',
                       'WRP']
 
-    def __init__(self, text, maintain_indeces=None, split_in_sentences=True):
+
+    def __init__(self, text, split_in_sentences=True, with_pos=False):
+        '''
+
+        :param text: input text
+        :param split_in_sentences: split text in sentences --> sub-arrays for sentences in Preprocess-result
+        :param with_pos: true: give tripel with (<startpos in orig-text>, <endpos in origtext>, token), else only tokens
+        '''
         self.text = text
         self.nlp_text = self.nlp(text)
 
-        if maintain_indeces is None:
-            self.maintain_indeces = []
-        else:
-            self.maintain_indeces = maintain_indeces
+        self.maintain_indeces = []
 
         self.noun_chunks = self.get_noun_chunks(cleaned=True, flattened=True)
         self.maintain_indeces.extend(index for index in self.noun_chunks if index not in self.maintain_indeces)
@@ -43,7 +84,7 @@ class Preprocess:
         self.maintain_indeces.extend(index for index in self.named_entities if index not in self.maintain_indeces)
         self.maintain_indeces.sort()
 
-        self.preprocessed = self.preprocess(sentence_split=split_in_sentences)
+        self.preprocessed = self.preprocess(sentence_split=split_in_sentences, with_pos=with_pos)
 
 
 
@@ -53,13 +94,14 @@ class Preprocess:
         :param token: spacy-token
         :return: lemmatization
         '''
-        lemma_spacy = token.lemma_
-        lemma_iwnlp_list = token._.iwnlp_lemmas
+        #lemma_iwnlp_list = token._.iwnlp_lemmas
+        lemma_iwnlp_list = self.lemmatizer.lemmatize_plain(token.text, ignore_case=False)
         if lemma_iwnlp_list:
             lemma_iwnlp = lemma_iwnlp_list[0]
+            #print(token, ":::", lemma_iwnlp_list[0])
             return lemma_iwnlp
 
-        return lemma_spacy
+        return token.lemma_
 
 
 
@@ -121,40 +163,45 @@ class Preprocess:
 
         return False
 
-    def __tokenize_words(self, doc):
+    def __tokenize_words(self, doc, with_pos=False):
         '''
         tokenizes text and removes unimportant tokens
+        :param doc: input spacy doc
+        :param with_pos: true: give tripel with (<startpos in orig-text>, <endpos in origtext>, token), else only tokens
         :return: 1d array of tokens
         '''
-        tokenized_text = [self.__get_lemma(token).lower() for token in doc
-                             if self.__is_valid_token(token)
-                             and not token.tag_ in self.tags_to_remove
-                             or token.i in self.maintain_indeces]
+        tokenized_text = [(token.idx, token.idx + len(token), self.__get_lemma(token).lower()) if with_pos else self.__get_lemma(token).lower() for token in doc
+                          if self.__is_valid_token(token)
+                          and not token.tag_ in self.tags_to_remove
+                          or token.i in self.maintain_indeces]
+
         return tokenized_text
 
-    def __tokenize_to_list_sentences(self):
+
+    def __tokenize_to_list_sentences(self, with_pos=False):
         '''
         tokenizes text and removes unimportant tokens, split by sentences
+        :param with_pos: true: give tripel with (<startpos in orig-text>, <endpos in origtext>, token), else only tokens
         :return: 2d array of tokens in sub-arrays (sentences)
         '''
         filtered_text = []
-
         for sentence in self.nlp_text.sents:
-            filtered_sentence = self.__tokenize_words(sentence)
+            filtered_sentence = self.__tokenize_words(sentence, with_pos=with_pos)
             filtered_text.append(filtered_sentence)
 
         return filtered_text
 
-    def preprocess(self, sentence_split=True):
+    def preprocess(self, sentence_split=True, with_pos=False):
         '''
         preprocess text. removes unimportant tokens
         :param sentence_split: split by sentences
-        :return: preprocessed text as 1d or 2d-array (sentences)
+        :param with_pos: true: give tripel with (<startpos in orig-text>, <endpos in origtext>, token), else only tokens
+        :return: 1d or 2d array with preprocessed text
         '''
         if sentence_split:
-            preprocessed_text = self.__tokenize_to_list_sentences()
+            preprocessed_text = self.__tokenize_to_list_sentences(with_pos=with_pos)
         else:
-            preprocessed_text = self.__tokenize_words(self.nlp_text)
+            preprocessed_text = self.__tokenize_words(self.nlp_text, with_pos=with_pos)
 
         return preprocessed_text
 
